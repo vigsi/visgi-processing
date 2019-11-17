@@ -90,6 +90,14 @@ class Aggregator:
 
 
 class Csv:
+    """
+    A transformation of the data that converts it to CSV.
+
+
+    This does a simple transformation of the input data to
+    write it out as a csv file, one per location.
+    """
+
 
     CHOICES = ['tocsv']
 
@@ -163,22 +171,31 @@ def main_cmd(args):
         log.error("not a path or directory - oh no!")
     log.info("Processing files %s", files)
 
+    # Sort the files in numeric order based on the start index
+    def get_start_index(filepath):
+        filename = os.path.basename(filepath)
+        if filename.find("-") < 0:
+            return (filepath, None)
+        start_index = int(filename[0:filename.find("-")])
+        return (filepath, start_index)
+
+    def index_key(path_and_index):
+        return path_and_index[1]
+
+    indexed_files = list(sorted(map(get_start_index, files), key=index_key))
+
     # What is the interval of the data between time points
     interval = timedelta(hours=args.interval_hours)
     log.info("Interval of the data is %s", interval)
 
-    # Finally, apply the aggregator to the data.
+    # Finally, apply the transformation to the data. We have a few transformations
+    # available, and we choose which one based on which one was input at the command
+    # line.
     if args.op in Aggregator.CHOICES:
         transform = Aggregator(args.op)
     else:
         transform = Csv(args.op, args.output)
-    for file_index, path in enumerate(files):
-        m = re.findall(r"(?P<start>\d+)-(\d+)\.json", path)
-        if len(m) != 1 or len(m[0]) != 2:
-            log.warning("Ignoring file %s", path)
-            continue
-        
-        start_index = int(m[0][0])
+    for file_index, (path, start_index) in enumerate(indexed_files):
         log.info("File %s start time is %s", path, get_data_instant(start_index))
 
         with open(path, "r") as input_file:
