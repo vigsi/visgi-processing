@@ -14,6 +14,7 @@
 
 import argparse
 from collections import defaultdict
+import copy
 from datetime import datetime, timedelta
 import json
 import logging
@@ -53,8 +54,7 @@ class Aggregator:
         if period == Aggregator.YEARLY:
             self.to_key = to_yearly_key
 
-        self.groups = defaultdict(list)
-        self.cur_index = 0
+        self.groups = dict()
 
     def append(self, data_instant, duration, data):
         """
@@ -73,9 +73,21 @@ class Aggregator:
         # Transform the data by "integrating" over the time window
         # for this data. The duration is an input parameter, and we assume
         # that things are constant over the entire period
+        duration_sec = duration.total_seconds()
+        for geometry in data:
+            geometry["properties"]["ghi"] = geometry["properties"]["ghi"] * duration_sec
 
+        group = self.groups.get(key, None)
+        if group is None:
+            # This is the first in the group
+            self.groups[key] = data
+        else:
+            # This is not the first, so join by common index
+            for pair in zip(group, data):
+                pair[0]["properties"]["ghi"] += pair[1]["properties"]["ghi"]
 
-        group = self.groups.get(key)
+    def to_csv(self):
+        pass
     
 
 def get_data_instant(time_index):
@@ -109,10 +121,11 @@ def main_cmd(args):
     # Finally, apply the aggregator to the data.
     aggregator = Aggregator(args.group_size)
     for path in files:
-        filename = os.path.basename(path)
-        end_prefix = filename.find("-")
-        start_index = int(filename[0:end_prefix-1])
+        m = re.findall(r"(?P<start>\d+)-(\d+)\.json", path)
+        if len(m) != 2:
+            log.warn("Ignoring file %s", path)
         
+        start_index = int(m[0][0])
         log.info("File %s start time is %s", path, get_data_instant(start_index))
 
         with open(path, "r") as input_file:
