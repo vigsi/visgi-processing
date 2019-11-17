@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import argparse
-from collections import defaultdict
+from collections import defaultdict, namedtuple
 import copy
 from datetime import datetime, timedelta
 import json
@@ -26,6 +26,7 @@ log = logging.getLogger("statistics_builder")
 
 
 class Aggregator:
+    """A transformation to the data that aggregates over different timescales."""
     HOURLY = "hourly"
     DAILY = "daily"
     MONTHLY = "monthly"
@@ -75,7 +76,8 @@ class Aggregator:
         # that things are constant over the entire period
         duration_sec = duration.total_seconds()
         for geometry in data:
-            geometry["properties"]["ghi"] = geometry["properties"]["ghi"] * duration_sec
+            geometry["properties"]["ghinet"] = geometry["properties"]["ghi"] * duration_sec
+            del geometry["properties"]["ghi"]
 
         group = self.groups.get(key, None)
         if group is None:
@@ -84,11 +86,56 @@ class Aggregator:
         else:
             # This is not the first, so join by common index
             for pair in zip(group, data):
-                pair[0]["properties"]["ghi"] += pair[1]["properties"]["ghi"]
+                pair[0]["properties"]["netghi"] += pair[1]["properties"]["netghi"]
 
-    def to_csv(self):
-        pass
-    
+
+class Csv:
+
+    CHOICES = ['tocsv']
+
+    Record = namedtuple('Record', ['t', 'v'])
+
+    Index = namedtuple('Index', ['x', 'y'])
+
+    def __init__(self, unused, path):
+        self.index_desc = []
+        self.records = None
+        self.path = path
+
+        if not os.path.isdir(self.path):
+            log.error("%s must be a directory", self.path)
+            raise ValueError(self.path + " must be a directory", )
+
+    def append(self, data_instant, duration, data):
+        if not self.index_desc:
+            # This is the first data that we have, so our first task
+            # is to figure out how big of an array we need
+            for geometry in data:
+                coords = geometry["geometry"]["coordinates"]
+                self.index_desc.append(Csv.Index(coords[0], coords[1]))
+
+        if not self.records:
+            self.records = [[] for x in range(len(self.index_desc))]
+
+        # Now populate the data
+        for index, geometry in enumerate(data):
+            self.records[index].append(Csv.Record(data_instant, geometry["properties"]["ghi"] ))
+
+    def write(self):
+        output_path = os.path.abspath(self.path)
+
+        # Write the index information file
+        with open(os.path.join(output_path, "index.csv"), "w") as indexfile:
+            indexfile.write("Location Index,X,Y\n") 
+            for i, index in enumerate(self.index_desc):
+                indexfile.write(str(i) + "," + str(index.x) + "," + str(index.y) + "\n")
+        
+        for location_index, location_records in enumerate(self.records):
+            with open(os.path.join(output_path, str(location_index) + ".csv"), "w") as recordsfile:
+                recordsfile.write("Time,Value\n") 
+                for record in location_records:
+                    recordsfile.write(record.t.isoformat() + "," + str(record.v) + "\n")
+
 
 def get_data_instant(time_index):
     return datetime(2007, 1, 1) + timedelta(hours=time_index)
@@ -98,18 +145,20 @@ def main_cmd(args):
     """The main function for our aggregation application."""
     parser = argparse.ArgumentParser(description="Calculate statistics from GHI")
     parser.add_argument("--interval_hours", type=int, default=1)
-    parser.add_argument("group_size", choices=Aggregator.CHOICES)
+    parser.add_argument("op", choices=Aggregator.CHOICES + Csv.CHOICES)
     parser.add_argument("input")
     parser.add_argument("output")
-    args = parser.parse_args()
+    args = parser.parse_args(args)
+
+    logging.getLogger().setLevel(logging.INFO)
 
     # Discover the files that we want to process
     if os.path.isfile(args.input):
         files = [os.path.abspath(args.input)]
     elif os.path.isdir(args.input):
         files = [os.path.abspath(os.path.join(args.input, f))
-                 for f in os.path.listdir(args.input)
-                 if os.path.isfile(os.path.join(args.input), f)]
+                 for f in os.listdir(args.input)
+                 if os.path.isfile(os.path.join(args.input, f))]
     else:
         log.error("not a path or directory - oh no!")
     log.info("Processing files %s", files)
@@ -119,11 +168,15 @@ def main_cmd(args):
     log.info("Interval of the data is %s", interval)
 
     # Finally, apply the aggregator to the data.
-    aggregator = Aggregator(args.group_size)
-    for path in files:
+    if args.op in Aggregator.CHOICES:
+        transform = Aggregator(args.op)
+    else:
+        transform = Csv(args.op, args.output)
+    for file_index, path in enumerate(files):
         m = re.findall(r"(?P<start>\d+)-(\d+)\.json", path)
-        if len(m) != 2:
-            log.warn("Ignoring file %s", path)
+        if len(m) != 1 or len(m[0]) != 2:
+            log.warning("Ignoring file %s", path)
+            continue
         
         start_index = int(m[0][0])
         log.info("File %s start time is %s", path, get_data_instant(start_index))
@@ -133,7 +186,11 @@ def main_cmd(args):
 
             for time_index, data_group in enumerate(data):
                 group_instant = get_data_instant(start_index + time_index)
-                aggregator.append(group_instant, interval, data_group)
+                transform.append(group_instant, interval, data_group)
+
+        print("File %d of %d completed" % (file_index, len(files)))
+
+    transform.write()
 
 
 if __name__ == "__main__":
