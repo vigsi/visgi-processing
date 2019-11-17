@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import sys
+import urllib.request
 
 log = logging.getLogger("statistics_builder")
 
@@ -34,17 +35,18 @@ class Aggregator:
 
     CHOICES = [HOURLY, DAILY, MONTHLY, YEARLY]
 
-    def __init__(self, period):
+    def __init__(self, period, path):
         self.period = period
+        self.path = os.path.abspath(path)
 
         def to_hourly_key(instant):
             return datetime(instant.year, instant.month, instant.day, instant.hour)
         def to_daily_key(instant):
             return datetime(instant.year, instant.month, instant.day)
         def to_monthly_key(instant):
-            return datetime(instant.year, instant.month)
+            return datetime(instant.year, instant.month, 1)
         def to_yearly_key(instant):
-            return datetime(instant.year)
+            return datetime(instant.year, 1, 1)
         
         if period == Aggregator.HOURLY:
             self.to_key = to_hourly_key
@@ -57,6 +59,12 @@ class Aggregator:
 
         self.groups = dict()
 
+    def start_file(self, filepath):
+        pass
+
+    def end_file(self):
+        pass
+
     def append(self, data_instant, duration, data):
         """
         Add a group of data, that all has the same time instant.
@@ -68,7 +76,7 @@ class Aggregator:
         :param duration: The duration of this interval that we have data for as a timedelta
         :param data: The GeoJSON data for the datetime.
         """
-        #Which group are we aggregating into?
+        # Which group are we aggregating into?
         key = self.to_key(data_instant)
 
         # Transform the data by "integrating" over the time window
@@ -76,7 +84,7 @@ class Aggregator:
         # that things are constant over the entire period
         duration_sec = duration.total_seconds()
         for geometry in data:
-            geometry["properties"]["ghinet"] = geometry["properties"]["ghi"] * duration_sec
+            geometry["properties"]["energy"] = geometry["properties"]["ghi"] * duration_sec
             del geometry["properties"]["ghi"]
 
         group = self.groups.get(key, None)
@@ -86,8 +94,111 @@ class Aggregator:
         else:
             # This is not the first, so join by common index
             for pair in zip(group, data):
-                pair[0]["properties"]["netghi"] += pair[1]["properties"]["netghi"]
+                pair[0]["properties"]["energy"] += pair[1]["properties"]["energy"]
 
+    def write(self):
+        for key, group in self.groups.items():
+            group_str = json.dumps(group)
+            filename = os.path.join(self.path, key.isoformat().replace(":", "") + ".000Z")
+            with open(filename, "w") as output_file:
+                output_file.write(group_str)
+
+class AddLatLonCoordinates:
+    """
+    A transformation of the GeoJSON data to add lat/lon coordinates
+    from the H5 coordinate indices.
+    """
+
+    CHOICES = ["addlatlon"]
+
+    COORDS_URL = "https://developer.nrel.gov/api/hsds//datasets/d-70e214c6-85f4-11e7-bf89-0242ac110008/value?select=[0:1601:32,0:2975:60]&host=/nrel/wtk-us.h5&api_key=3K3JQbjZmWctY0xmIfSYvYgtIcM3CN0cb1Y2w9bf"
+
+    def __init__(self, unused, path):
+        self.output_path = path
+        with urllib.request.urlopen(AddLatLonCoordinates.COORDS_URL) as response:
+            data = response.read()
+
+        coord_data = json.loads(data)
+        self.coords = coord_data["value"]
+        self.cur_file_name = None
+        self.records = []
+        
+    def start_file(self, filepath):
+        self.cur_file_name = os.path.basename(filepath)
+
+    def end_file(self):
+        # Write to string with compact encoding
+        data_str = json.dumps(self.records, separators=(",", ":"))
+        with open(os.path.join(self.output_path, self.cur_file_name), "w") as output_file:
+            output_file.write(data_str )
+        self.records = []
+
+    def append(self, data_instant, duration, data):
+        """Add a group of data in a file record"""
+        max_xi = len(self.coords)
+        max_yi = len(self.coords[0])
+
+        def is_end(x):
+            coord_index = x["geometry"]["coordinates"]
+            xi = coord_index[0]
+            yi = coord_index[1]
+            return xi + 1 >= max_xi or yi + 1 >= max_yi
+
+        for geometry in [x for x in data if not is_end(x)]:
+            coord_index = geometry["geometry"]["coordinates"]
+            xi = coord_index[0]
+            yi = coord_index[1]
+
+            pt1 = self.coords[xi][yi]
+            pt2 = self.coords[xi + 1][yi]
+            pt3 = self.coords[xi + 1][yi + 1]
+            pt4 = self.coords[xi][yi + 1]
+
+            geometry["geometry"]["coordinates"] = [[pt1, pt2, pt3, pt4, pt1]]
+
+        self.records.append(data)
+
+
+class SplitByTimeIndex:
+    """
+    A transformation of the data that splits based on time index
+    of the data.
+    """
+
+    CHOICES = ["splitindex"]
+
+    def __init__(self, unused, path):
+        self.path = path
+
+        if not os.path.isdir(self.path):
+            log.error("%s must be a directory", self.path)
+            raise ValueError(self.path + " must be a directory")
+
+    def start_file(self, filepath):
+        pass
+
+    def end_file(self):
+        pass
+
+    def append(self, data_instant, duration, data):
+        data_str = json.dumps(data, separators=(",", ":"))
+        with open(os.path.join(self.path, data_instant.isoformat() + ".json")) as output_file:
+            output_file.write(data_str)
+
+    def write(self):
+        output_path = os.path.abspath(self.path)
+
+        # Write the index information file
+        with open(os.path.join(output_path, "index.csv"), "w") as indexfile:
+            indexfile.write("Location Index,X,Y\n") 
+            for i, index in enumerate(self.index_desc):
+                indexfile.write(str(i) + "," + str(index.x) + "," + str(index.y) + "\n")
+        
+        for location_index, location_records in enumerate(self.records):
+            with open(os.path.join(output_path, str(location_index) + ".csv"), "w") as recordsfile:
+                recordsfile.write("Time,Value\n") 
+                for record in location_records:
+                    recordsfile.write(record.t.isoformat() + "," + str(record.v) + "\n")
 
 class Csv:
     """
@@ -99,11 +210,11 @@ class Csv:
     """
 
 
-    CHOICES = ['tocsv']
+    CHOICES = ["tocsv"]
 
-    Record = namedtuple('Record', ['t', 'v'])
+    Record = namedtuple("Record", ["t", "v"])
 
-    Index = namedtuple('Index', ['x', 'y'])
+    Index = namedtuple("Index", ["x", "y"])
 
     def __init__(self, unused, path):
         self.index_desc = []
@@ -112,7 +223,13 @@ class Csv:
 
         if not os.path.isdir(self.path):
             log.error("%s must be a directory", self.path)
-            raise ValueError(self.path + " must be a directory", )
+            raise ValueError(self.path + " must be a directory")
+
+    def start_file(self, filepath):
+        pass
+
+    def end_file(self):
+        pass
 
     def append(self, data_instant, duration, data):
         if not self.index_desc:
@@ -153,7 +270,7 @@ def main_cmd(args):
     """The main function for our aggregation application."""
     parser = argparse.ArgumentParser(description="Calculate statistics from GHI")
     parser.add_argument("--interval_hours", type=int, default=1)
-    parser.add_argument("op", choices=Aggregator.CHOICES + Csv.CHOICES)
+    parser.add_argument("op", choices=Aggregator.CHOICES + Csv.CHOICES + AddLatLonCoordinates.CHOICES)
     parser.add_argument("input")
     parser.add_argument("output")
     args = parser.parse_args(args)
@@ -192,20 +309,24 @@ def main_cmd(args):
     # available, and we choose which one based on which one was input at the command
     # line.
     if args.op in Aggregator.CHOICES:
-        transform = Aggregator(args.op)
-    else:
+        transform = Aggregator(args.op, args.output)
+    elif args.op in Csv.CHOICES:
         transform = Csv(args.op, args.output)
+    elif args.op in AddLatLonCoordinates.CHOICES:
+        transform = AddLatLonCoordinates(args.op, args.output)
     for file_index, (path, start_index) in enumerate(indexed_files):
         log.info("File %s start time is %s", path, get_data_instant(start_index))
 
         with open(path, "r") as input_file:
             data = json.load(input_file)
 
+            transform.start_file(path)
             for time_index, data_group in enumerate(data):
                 group_instant = get_data_instant(start_index + time_index)
                 transform.append(group_instant, interval, data_group)
+            transform.end_file()
 
-        print("File %d of %d completed" % (file_index, len(files)))
+        print("File %d of %d completed" % (file_index + 1, len(files)))
 
     transform.write()
 
