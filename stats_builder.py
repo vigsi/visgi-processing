@@ -313,15 +313,20 @@ def main_cmd(args):
     interval = timedelta(hours=args.interval_hours)
     log.info("Interval of the data is %s", interval)
 
+    output_dir = os.path.abspath(args.output)
+    if os.listdir(output_dir) != []:
+        log.error("Output directory %s must be empty", output_dir)
+        sys.exit(-1)
+
     # Finally, apply the transformation to the data. We have a few transformations
     # available, and we choose which one based on which one was input at the command
     # line.
     if args.op in Aggregator.CHOICES:
-        transform = Aggregator(args.op, args.output)
+        transform = Aggregator(args.op, output_dir)
     elif args.op in Csv.CHOICES:
-        transform = Csv(args.op, args.output)
+        transform = Csv(args.op, output_dir)
     elif args.op in AddLatLonCoordinates.CHOICES:
-        transform = AddLatLonCoordinates(args.op, args.output)
+        transform = AddLatLonCoordinates(args.op, output_dir)
     for file_index, (path, start_index) in enumerate(indexed_files):
         log.info("File %s start time is %s", path, get_data_instant(start_index))
 
