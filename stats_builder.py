@@ -229,7 +229,16 @@ class Csv:
         pass
 
     def end_file(self):
-        pass
+        # Every time we finish a file, we will append to the output
+        # so that we don't use up all of our memory
+        output_path = os.path.abspath(self.path)
+
+        for location_index, location_records in enumerate(self.records):
+            with open(os.path.join(output_path, str(location_index) + ".csv"), "a") as recordsfile:
+                for record in location_records:
+                    recordsfile.write(record.t.isoformat() + "," + str(record.v) + "\n")
+
+        self.records = [[] for x in range(len(self.index_desc))]
 
     def append(self, data_instant, duration, data):
         if not self.index_desc:
@@ -256,8 +265,7 @@ class Csv:
                 indexfile.write(str(i) + "," + str(index.x) + "," + str(index.y) + "\n")
         
         for location_index, location_records in enumerate(self.records):
-            with open(os.path.join(output_path, str(location_index) + ".csv"), "w") as recordsfile:
-                recordsfile.write("Time,Value\n") 
+            with open(os.path.join(output_path, str(location_index) + ".csv"), "a") as recordsfile:
                 for record in location_records:
                     recordsfile.write(record.t.isoformat() + "," + str(record.v) + "\n")
 
