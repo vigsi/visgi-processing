@@ -314,6 +314,10 @@ def main_cmd(args):
     log.info("Interval of the data is %s", interval)
 
     output_dir = os.path.abspath(args.output)
+    if not os.path.isdir(output_dir):
+        log.error("Output directory %s must already exist", output_dir)
+        sys.exit(-1)
+
     if os.listdir(output_dir) != []:
         log.error("Output directory %s must be empty", output_dir)
         sys.exit(-1)
