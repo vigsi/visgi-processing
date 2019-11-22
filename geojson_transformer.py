@@ -173,6 +173,9 @@ class AddLatLonCoordinates:
 
         self.records.append(data)
 
+    def write(self):
+        pass
+
 
 class SplitByTimeIndex:
     """
@@ -285,15 +288,54 @@ class Csv:
                     recordsfile.write(record.t.isoformat() + "," + str(record.v) + "\n")
 
 
+class FixIncorrectStructure:
+
+    CHOICES = ["fix"]
+
+    def __init__(self, unused, path):
+        self.records_by_date = defaultdict(list)
+        self.path = path
+        if not os.path.isdir(self.path):
+            log.error("%s must be a directory", self.path)
+            raise ValueError(self.path + " must be a directory")
+
+    def start_file(self, filepath):
+        pass
+
+    def end_file(self):
+        pass
+
+    def append(self, data_instant, duration, data):
+        # Now populate the data
+        datestr = data["properties"]["time_stamp"]
+        del data["properties"]["time_stamp"]
+        date = datetime.strptime(datestr, '%Y-%m-%d')
+
+        data["properties"]["energy"] = data["properties"]["ghi"]
+        del data["properties"]["ghi"]
+
+        data["geometry"]["type"] = "Polygon"
+
+        self.records_by_date[date].append(data)
+
+    def write(self):
+        for key, value in self.records_by_date.items():
+            group_str = json.dumps(value)
+            filename = os.path.join(self.path, key.isoformat().replace(":", "") + ".000Z")
+            with open(filename, "w") as output_file:
+                output_file.write(group_str)
+
+
 def get_data_instant(time_index):
-    return datetime(2007, 1, 1) + timedelta(hours=time_index)
+    if time_index is not None:
+        return datetime(2007, 1, 1) + timedelta(hours=time_index)
 
 
 def main_cmd(args):
     """The main function for our aggregation application."""
     parser = argparse.ArgumentParser(description="Calculate statistics from GHI")
     parser.add_argument("--interval_hours", type=int, default=1)
-    parser.add_argument("op", choices=Aggregator.CHOICES + Csv.CHOICES + AddLatLonCoordinates.CHOICES)
+    parser.add_argument("op", choices=Aggregator.CHOICES + Csv.CHOICES + AddLatLonCoordinates.CHOICES + FixIncorrectStructure.CHOICES)
     parser.add_argument("input")
     parser.add_argument("output")
     args = parser.parse_args(args)
@@ -311,18 +353,21 @@ def main_cmd(args):
         log.error("not a path or directory - oh no!")
     log.info("Processing files %s", files)
 
-    # Sort the files in numeric order based on the start index
-    def get_start_index(filepath):
-        filename = os.path.basename(filepath)
-        if filename.find("-") < 0:
-            return (filepath, None)
-        start_index = int(filename[0:filename.find("-")])
-        return (filepath, start_index)
+    if args.op not in FixIncorrectStructure.CHOICES:
+        # Sort the files in numeric order based on the start index
+        def get_start_index(filepath):
+            filename = os.path.basename(filepath)
+            if filename.find("-") < 0:
+                return (filepath, None)
+            start_index = int(filename[0:filename.find("-")])
+            return (filepath, start_index)
 
-    def index_key(path_and_index):
-        return path_and_index[1]
+        def index_key(path_and_index):
+            return path_and_index[1]
 
-    indexed_files = list(sorted(map(get_start_index, files), key=index_key))
+        indexed_files = list(sorted(map(get_start_index, files), key=index_key))
+    else:
+        indexed_files = [(f, 0) for f in files]
 
     # What is the interval of the data between time points
     interval = timedelta(hours=args.interval_hours)
@@ -346,11 +391,16 @@ def main_cmd(args):
         transform = Csv(args.op, output_dir)
     elif args.op in AddLatLonCoordinates.CHOICES:
         transform = AddLatLonCoordinates(args.op, output_dir)
+    elif args.op in FixIncorrectStructure.CHOICES:
+        transform = FixIncorrectStructure(args.op, output_dir)
     for file_index, (path, start_index) in enumerate(indexed_files):
         log.info("File %s start time is %s", path, get_data_instant(start_index))
 
         with open(path, "r") as input_file:
             data = json.load(input_file)
+
+            if isinstance(data, dict):
+                data = data["features"]
 
             transform.start_file(path)
             for time_index, data_group in enumerate(data):
