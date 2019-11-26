@@ -26,7 +26,7 @@ import urllib.request
 log = logging.getLogger("statistics_builder")
 
 
-class Aggregator:
+class PowerAggregator:
     """A transformation to the data that aggregates over different timescales."""
     HOURLY = "hourly"
     DAILY = "daily"
@@ -48,16 +48,16 @@ class Aggregator:
         def to_yearly_key(instant):
             return datetime(instant.year, 1, 1)
         
-        if period == Aggregator.HOURLY:
+        if period == PowerAggregator.HOURLY:
             self.to_key = to_hourly_key
             self.type = "hourlyenergy"
-        if period == Aggregator.DAILY:
+        if period == PowerAggregator.DAILY:
             self.to_key = to_daily_key
             self.type = "energy"
-        if period == Aggregator.MONTHLY:
+        if period == PowerAggregator.MONTHLY:
             self.to_key = to_monthly_key
             self.type = "monthlyenergy"
-        if period == Aggregator.YEARLY:
+        if period == PowerAggregator.YEARLY:
             self.to_key = to_yearly_key
             self.type = "yearlyenergy"
 
@@ -110,6 +110,77 @@ class Aggregator:
             filename = os.path.join(self.path, self.last_key.isoformat().replace(":", "") + ".000Z")
             with open(filename, "w") as output_file:
                 output_file.write(group_str)
+
+
+class EnergyAggregator:
+    """A transformation to the data that aggregates over different timescales."""
+    MONTHLY = "emonthly"
+    YEARLY = "eyearly"
+
+    CHOICES = [MONTHLY, YEARLY]
+
+    def __init__(self, period, path):
+        self.period = period
+        self.path = os.path.abspath(path)
+
+        def to_monthly_key(instant):
+            return datetime(instant.year, instant.month, 1)
+        def to_yearly_key(instant):
+            return datetime(instant.year, 1, 1)
+        
+        if period == EnergyAggregator.MONTHLY:
+            self.to_key = to_monthly_key
+            self.type = "monthlyenergy"
+        if period == EnergyAggregator.YEARLY:
+            self.to_key = to_yearly_key
+            self.type = "yearlyenergy"
+
+        self.last_key = None
+        self.data = None
+
+    def start_file(self, filepath):
+        pass
+
+    def end_file(self):
+        pass
+
+    def append(self, data_instant, duration, data):
+        """
+        Add a group of data, that all has the same time instant.
+
+        The format of the data is a GeoJSON record, which contains data
+        for multiple locations.
+
+        :param data_instant: The datetime of the data.
+        :param duration: The duration of this interval that we have data for as a timedelta
+        :param data: The GeoJSON data for the datetime.
+        """
+        # Which group are we aggregating into?
+        key = self.to_key(data_instant)
+
+        for geometry in data:
+            geometry["properties"][self.type] = geometry["properties"]["energy"]
+            del geometry["properties"]["energy"]
+
+        if self.last_key != key:
+            # Write out the prior result
+            self.write()
+
+            # Wet the next result as our current in-progress work
+            self.last_key = key
+            self.data = data
+        else:
+            # Merge into the in-progress group
+            for pair in zip(self.data, data):
+                pair[0]["properties"][self.type] += pair[1]["properties"][self.type]
+
+    def write(self):
+        if self.last_key is not None:
+            group_str = json.dumps(self.data)
+            filename = os.path.join(self.path, self.last_key.isoformat().replace(":", "") + ".000Z")
+            with open(filename, "w") as output_file:
+                output_file.write(group_str)
+
 
 class AddLatLonCoordinates:
     """
@@ -335,7 +406,7 @@ def main_cmd(args):
     """The main function for our aggregation application."""
     parser = argparse.ArgumentParser(description="Calculate statistics from GHI")
     parser.add_argument("--interval_hours", type=int, default=1)
-    parser.add_argument("op", choices=Aggregator.CHOICES + Csv.CHOICES + AddLatLonCoordinates.CHOICES + FixIncorrectStructure.CHOICES)
+    parser.add_argument("op", choices=PowerAggregator.CHOICES + Csv.CHOICES + AddLatLonCoordinates.CHOICES + FixIncorrectStructure.CHOICES + EnergyAggregator.CHOICES)
     parser.add_argument("input")
     parser.add_argument("output")
     args = parser.parse_args(args)
@@ -385,8 +456,18 @@ def main_cmd(args):
     # Finally, apply the transformation to the data. We have a few transformations
     # available, and we choose which one based on which one was input at the command
     # line.
-    if args.op in Aggregator.CHOICES:
-        transform = Aggregator(args.op, output_dir)
+    mod_fn = None
+    date_fn = None
+    if args.op in PowerAggregator.CHOICES:
+        transform = PowerAggregator(args.op, output_dir)
+    elif args.op in EnergyAggregator.CHOICES:
+        transform = EnergyAggregator(args.op, output_dir)
+        def date_getter(filename):
+            return datetime.strptime(os.path.splitext(os.path.basename(filename))[0], "%Y-%m-%dT%H%M%S")
+        date_fn = date_getter
+        def energy_mod(data):
+            return [data]
+        mod_fn = energy_mod
     elif args.op in Csv.CHOICES:
         transform = Csv(args.op, output_dir)
     elif args.op in AddLatLonCoordinates.CHOICES:
@@ -401,10 +482,15 @@ def main_cmd(args):
 
             if isinstance(data, dict):
                 data = data["features"]
+            elif mod_fn:
+                data = mod_fn(data)
 
             transform.start_file(path)
             for time_index, data_group in enumerate(data):
-                group_instant = get_data_instant(start_index + time_index)
+                if date_fn:
+                    group_instant = date_fn(path)
+                else:
+                    group_instant = get_data_instant(start_index + time_index)
                 transform.append(group_instant, interval, data_group)
             transform.end_file()
 
