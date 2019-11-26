@@ -33,7 +33,7 @@ Use the `daily` transformation to perform step-wise integration:
 python geojson_transformer.py daily <DOWNLOADED FILES DIR> <INTERMEDIATE DIR>
 ```
 
-Then use the `addlatlon` transformation to add latitude and longtitude information
+Then use the `addlatlon` transformation to add latitude and longitude information
 to the data set.
 
 ```
@@ -48,7 +48,7 @@ Use the `monthly` transformation to perform step-wise integration:
 python geojson_transformer.py monthly <DOWNLOADED FILES DIR> <INTERMEDIATE DIR>
 ```
 
-Then use the `addlatlon` transformation to add latitude and longtitude information
+Then use the `addlatlon` transformation to add latitude and longitude information
 to the data set.
 
 ```
@@ -63,7 +63,7 @@ Use the `yearly` transformation to perform step-wise integration:
 python geojson_transformer.py yearly <DOWNLOADED FILES DIR> <INTERMEDIATE DIR>
 ```
 
-Then use the `addlatlon` transformation to add latitude and longtitude information
+Then use the `addlatlon` transformation to add latitude and longitude information
 to the data set.
 
 ```
@@ -86,7 +86,7 @@ the following transformation to fix the structure.
 python geojson_transformer.py fix <LEARNING OUT DIR> <INTERMEDIATE DIR>
 ```
 
-Then use the `addlatlon` transformation to add latitude and longtitude information
+Then use the `addlatlon` transformation to add latitude and longitude information
 to the data set.
 
 ```
@@ -115,7 +115,7 @@ Use the `emonthly` transformation to aggregate monthly energy.
 python geojson_transformer.py emonthly <INTERMEDIATE1 DIR> <INTERMEDIATE2 DIR>
 ```
 
-Then use the `addlatlon` transformation to add latitude and longtitude information
+Then use the `addlatlon` transformation to add latitude and longitude information
 to the data set.
 
 ```
@@ -144,7 +144,7 @@ Use the `emonthly` transformation to aggregate monthly energy.
 python geojson_transformer.py emonthly <INTERMEDIATE1 DIR> <INTERMEDIATE2 DIR>
 ```
 
-Then use the `addlatlon` transformation to add latitude and longtitude information
+Then use the `addlatlon` transformation to add latitude and longitude information
 to the data set.
 
 ```
